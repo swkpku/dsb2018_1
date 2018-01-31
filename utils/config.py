@@ -94,7 +94,7 @@ class DSBConfig:
     pretrained_model = 'vgg16'
 
     # training
-    epoch = 14
+    epoch = 100
 
 
     use_adam = True # Use Adam optimizer
