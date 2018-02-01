@@ -155,3 +155,16 @@ class DSBTestDataset:
 
     def __len__(self):
         return len(self.db)
+        
+class DSBPredictDataset:
+    def __init__(self, opt, split='predict', use_difficult=True):
+        self.opt = opt
+        self.db = DSBBboxDataset(opt.voc_data_dir, split=split, use_difficult=use_difficult)
+
+    def __getitem__(self, idx):
+        ori_img, predicted_mask, id_ = self.db.get_example(idx)
+        img = preprocess(ori_img)
+        return img, ori_img.shape[1:], predicted_mask, id_
+
+    def __len__(self):
+        return len(self.db)

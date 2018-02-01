@@ -161,17 +161,21 @@ class DSBBboxDataset:
     def __init__(self, data_dir, split='trainval',
                  use_difficult=False, return_difficult=False,
                  ):
+        self.data_dir = data_dir
         
         id_list_file = "/home/swk/dsb2018/stage1_train_data/train_ids_train_256_0.txt"
         
         if split == 'test':
             id_list_file = "/home/swk/dsb2018/stage1_train_data/train_ids_val_256_0.txt"
+        elif split == 'predict':
+            id_list_file = "/home/swk/dsb2018/stage1_test_data/test_ids_256.txt"
+            self.data_dir="/home/swk/dsb2018/stage1_test/"
 
         self.ids = [id_.strip() for id_ in open(id_list_file)]
-        self.data_dir = data_dir
         self.use_difficult = use_difficult
         self.return_difficult = return_difficult
         self.label_names = VOC_BBOX_LABEL_NAMES
+        self.split = split
 
     def __len__(self):
         return len(self.ids)
@@ -190,6 +194,17 @@ class DSBBboxDataset:
 
         """
         id_ = self.ids[i]
+        
+        # Load a image
+        img_file = self.data_dir+id_+"/images/"+id_+'.png'
+        img = read_image(img_file)
+        
+        predicted_mask_file = self.data_dir+id_+"/predicted_mask.png"
+        predicted_mask = read_image(predicted_mask_file, dtype=np.int32, color=False)
+        
+        if self.split == 'predict':
+            return img, predicted_mask, id_
+        
         bbox = list()
         label = list()
         difficult = list()
@@ -204,10 +219,6 @@ class DSBBboxDataset:
         label = np.stack(label).astype(np.int32)
         # When `use_difficult==False`, all elements in `difficult` are False.
         difficult = np.array(difficult, dtype=np.bool).astype(np.uint8)  # PyTorch don't support np.bool
-
-        # Load a image
-        img_file = self.data_dir+id_+"/images/"+id_+'.png'
-        img = read_image(img_file)
 
         # if self.return_difficult:
         #     return img, bbox, label, difficult

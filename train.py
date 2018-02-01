@@ -4,8 +4,8 @@ import ipdb
 import matplotlib
 from tqdm import tqdm
 
-from utils.config import opt, dsbopt
-from data.dataset import Dataset, TestDataset, inverse_normalize, DSBDataset, DSBTestDataset
+from utils.config import opt, dsbopt, dsbpredopt
+from data.dataset import Dataset, TestDataset, inverse_normalize, DSBDataset, DSBTestDataset, DSBPredictDataset
 from model import FasterRCNNVGG16
 from torch.autograd import Variable
 from torch.utils import data as data_
@@ -13,6 +13,9 @@ from trainer import FasterRCNNTrainer
 from utils import array_tool as at
 from utils.vis_tool import visdom_bbox
 from utils.eval_tool import eval_detection_voc
+
+import pandas as pd
+import numpy as np
 
 # fix for ulimit
 # https://github.com/pytorch/pytorch/issues/973#issuecomment-346405667
@@ -22,6 +25,21 @@ rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (20480, rlimit[1]))
 
 matplotlib.use('agg')
+
+def rle_encoding(x):
+    dots = np.where(x.T.flatten() == 1)[0]
+    run_lengths = []
+    prev = -2
+    for b in dots:
+        if (b>prev+1): run_lengths.extend((b + 1, 0))
+        run_lengths[-1] += 1
+        prev = b
+    return run_lengths
+
+def prob_to_rles(x):
+    lab_img = x
+    for i in range(1, lab_img.max() + 1):
+        yield rle_encoding(lab_img == i)
 
 
 def eval(dataloader, faster_rcnn, test_num=10000):
@@ -124,6 +142,98 @@ def train(**kwargs):
         #if epoch == 13: 
         #    break
 
+def predict(**kwargs):
+    dsbpredopt._parse(kwargs)
+
+    dataset = DSBPredictDataset(dsbpredopt)
+    print('load data')
+    dataloader = data_.DataLoader(dataset, \
+                                  batch_size=1, \
+                                  shuffle=False, \
+                                  pin_memory=True,
+                                  num_workers=dsbpredopt.num_workers)
+                                  
+    faster_rcnn = FasterRCNNVGG16()
+    print('model construct completed')
+    trainer = FasterRCNNTrainer(faster_rcnn).cuda()
+    if dsbpredopt.load_path:
+        trainer.load(dsbpredopt.load_path)
+        print('load checkpoint from %s' % dsbpredopt.load_path)
+        
+    new_test_ids = []
+    rles = []
+
+    for ii, (imgs, sizes, predicted_mask, id_) in tqdm(enumerate(dataloader)):
+        sizes = [sizes[0][0], sizes[1][0]]
+        pred_bboxes_, pred_labels_, pred_scores_ = faster_rcnn.predict(imgs, [sizes])
+        #pred_img = visdom_bbox(at.tonumpy(imgs[0]),
+        #                       at.tonumpy(pred_bboxes_[0]),
+        #                       at.tonumpy(pred_labels_[0]).reshape(-1),
+        #                       at.tonumpy(pred_scores_[0]))
+        #pred_mask_img = visdom_bbox(at.tonumpy(predicted_mask[0]),
+        #                       at.tonumpy(pred_bboxes_[0]),
+        #                       at.tonumpy(pred_labels_[0]).reshape(-1),
+        #                       at.tonumpy(pred_scores_[0]))
+                               
+        #trainer.vis.img('pred_img', pred_img)
+        #trainer.vis.img('pred_mask_img', pred_mask_img)
+        #input("Press Enter to continue...")
+        
+        predicted_mask_labeled = np.squeeze(at.tonumpy(predicted_mask[0]).copy())
+        pred_bboxes_ = at.tonumpy(pred_bboxes_[0]).astype(np.uint16)
+
+        if pred_bboxes_.shape[0] == 0:
+            print(id_[0])
+
+        if predicted_mask_labeled.shape[0] != sizes[0] or predicted_mask_labeled.shape[1] != sizes[1]:
+            print('wtf')
+
+        for idx, pred_bbox in enumerate(pred_bboxes_):
+            mask = predicted_mask_labeled[pred_bbox[0]:pred_bbox[2], pred_bbox[1]:pred_bbox[3]]
+            #print(predicted_mask_labeled.shape)
+            #print(pred_bbox[0])
+            #print(pred_bbox[2])
+            #print(pred_bbox[1])
+            #print(pred_bbox[3])
+            #print(mask)
+            #input("input")
+            if (pred_bbox[2] > sizes[0] or pred_bbox[3] > sizes[1]):
+                print('wtf')
+            mask[mask > 0] = idx+1
+            predicted_mask_labeled[pred_bbox[0]:pred_bbox[2], pred_bbox[1]:pred_bbox[3]] = mask
+        
+        predicted_mask_labeled[predicted_mask_labeled == 255] = 0
+        #print(predicted_mask_labeled)
+        rle = list(prob_to_rles(predicted_mask_labeled))
+        #print(rle)
+        #exit()
+        #for r_i, rle_i in enumerate(rle):
+            #for r_j, rle_j in enumerate(rle_i):
+                #if r_j % 2 == 0:
+                    #if (rle_j-1)%sizes[0]+1+rle_i[r_j+1]-1 >= sizes[0]:
+                        #print(rle_j)
+                        #print(rle_i[r_j+1])
+                        #print((rle_j-1)%sizes[0]+1+rle_i[r_j+1]-1)
+                        #print(sizes[0])
+                        #print('out of size 0')
+                        #print(rle[r_i][r_j+1])
+                        #print(r_i)
+                        #print(r_j+1)
+                        #rle[r_i][r_j+1] = rle[r_i][r_j+1] - 1
+                        #print(rle[r_i][r_j+1])
+                    #if rle_j + rle_i[r_j+1]-1 >= sizes[0] * sizes[1]:
+                        #print('out of total number')
+        #rle[0][1] = 6
+        #print(rle)
+        #exit()
+        rles.extend(rle)
+        new_test_ids.extend([id_[0]] * len(rle))
+        
+
+    sub = pd.DataFrame()
+    sub['ImageId'] = new_test_ids
+    sub['EncodedPixels'] = pd.Series(rles).apply(lambda x: ' '.join(str(y) for y in x))
+    sub.to_csv("predicts/unet__data_0_d6_t_c_lr9_bs4_size256_epoch_74.csv", index=False)
 
 if __name__ == '__main__':
     import fire
